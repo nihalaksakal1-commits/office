@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DAMAR Ofis Simülasyonu</title>
+  <style>
+    html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#0b1020; font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
+    #ui {
+      position: fixed; top: 12px; left: 12px; z-index: 10;
+      width: min(420px, calc(100vw - 24px));
+      background: rgba(10, 20, 40, 0.72);
+      border: 1px solid rgba(120,180,255,0.25);
+      border-radius: 14px;
+      padding: 12px 12px 10px;
+      color: #d7e7ff;
+      backdrop-filter: blur(6px);
+      box-shadow: 0 10px 35px rgba(0,0,0,0.35);
+    }
+    #ui .row { display:flex; gap:10px; align-items:center; justify-content:space-between; }
+    #ui h1 { font-size:14px; margin:0 0 8px 0; letter-spacing:0.2px; font-weight:700; }
+    #time { font-variant-numeric: tabular-nums; font-weight:700; color:#7fe7ff; }
+    #status { margin-top:10px; max-height: 55vh; overflow:auto; padding-right:6px; }
+    .emp { display:flex; justify-content:space-between; gap:10px; padding:6px 0; border-bottom: 1px solid rgba(130,190,255,0.12); }
+    .emp:last-child { border-bottom:0; }
+    .emp .name { font-weight:650; color:#eaf4ff; }
+    .emp .st { color:#b8d2ff; font-size:12px; text-align:right; }
+    #hint {
+      position: fixed; right: 12px; bottom: 12px; z-index: 10;
+      color: rgba(230,245,255,0.75);
+      font-size: 12px; line-height:1.35;
+      background: rgba(10, 20, 40, 0.58);
+      border: 1px solid rgba(120,180,255,0.18);
+      border-radius: 12px;
+      padding: 10px 12px;
+      backdrop-filter: blur(6px);
+      max-width: 45vw;
+    }
+    #c { position:absolute; inset:0; }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <h1>DAMAR / Ofis Simülasyonu</h1>
+    <div class="row">
+      <div>Simülasyon Saati</div>
+      <div id="time">09:00 (00)</div>
+    </div>
+    <div id="status"></div>
+  </div>
+
+  <div id="hint">
+    Fare: döndür • Sağ tık: sürükle • Teker: zoom<br/>
+    <span style="color:#bfefff">İpucu:</span> Ekran solundaki durum listesini izleyin.
+  </div>
+
+  <canvas id="c"></canvas>
+
+  <script type="module">
+    import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+    import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+
+    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+    const sim = {
+      simSecondsPerRealSecond: 60,
+      startTimeMin: 9 * 60,
+      dayMinutes: 24 * 60,
+      speed: 1,
+    };
+
+    const formatTime = (totalMin) => {
+      const m = ((totalMin % sim.dayMinutes) + sim.dayMinutes) % sim.dayMinutes;
+      const hh = String(Math.floor(m/60)).padStart(2,'0');
+      const mm = String(m%60).padStart(2,'0');
+      return `${hh}:${mm} (${mm})`;
+    };
+
+    const canvas = document.getElementById('c');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0b1020);
+    scene.fog = new THREE.Fog(0x0b1020, 20, 90);
+
+    const camera = new THREE.PerspectiveCamera(55, window.innerWidth/window.innerHeight, 0.1, 200);
+    camera.position.set(20, 20, 26);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.06;
+    controls.target.set(10, 0, 10);
+
+    scene.add(new THREE.AmbientLight(0x9ec7ff, 0.28));
+    const dir = new THREE.DirectionalLight(0xffffff, 1.0);
+    dir.position.set(15, 30, 10);
+    scene.add(dir);
+
+    const FLOOR_W = 30;
+    const FLOOR_D = 20;
+    const floorGeo = new THREE.PlaneGeometry(FLOOR_W, FLOOR_D);
+    const floorMat = new THREE.MeshStandardMaterial({ color: 0x0f1a34, roughness: 0.95, metalness: 0.0 });
+    const floor = new THREE.Mesh(floorGeo, floorMat);
+    floor.rotation.x = -Math.PI/2;
+    floor.position.set(FLOOR_W/2, 0, FLOOR_D/2);
+    scene.add(floor);
+
+    const grid = new THREE.GridHelper(FLOOR_W, FLOOR_W/2, 0x2b4a87, 0x16305f);
+    grid.position.set(0, 0.001, 0);
+    scene.add(grid);
+
+    // Test küpü (görünür mü kontrol)
+    const testCube = new THREE.Mesh(
+      new THREE.BoxGeometry(2, 2, 2),
+      new THREE.MeshStandardMaterial({ color: 0xff4444 })
+    );
+    testCube.position.set(10, 1, 10);
+    scene.add(testCube);
+
+    const timeEl = document.getElementById('time');
+    let simTimeMinutes = 0;
+    let clock = null;
+
+    function update() {
+      requestAnimationFrame(update);
+      const now = performance.now();
+      const dt = clock ? (now - clock)/1000 : 0;
+      clock = now;
+      const dtReal = Math.min(0.05, dt);
+      const dtMin = (dtReal * sim.simSecondsPerRealSecond) * sim.speed;
+      simTimeMinutes += dtMin;
+
+      const absMin = sim.startTimeMin + simTimeMinutes;
+      timeEl.textContent = formatTime(absMin);
+
+      testCube.rotation.y += 0.01;
+      controls.update();
+      renderer.render(scene, camera);
+    }
+
+    update();
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>
