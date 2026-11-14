@@ -1,0 +1,670 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DAMAR Ofis Simülasyonu</title>
+  <style>
+    html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#0b1020; font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
+    #ui {
+      position: fixed; top: 12px; left: 12px; z-index: 10;
+      width: min(420px, calc(100vw - 24px));
+      background: rgba(10, 20, 40, 0.72);
+      border: 1px solid rgba(120,180,255,0.25);
+      border-radius: 14px;
+      padding: 12px 12px 10px;
+      color: #d7e7ff;
+      backdrop-filter: blur(6px);
+      box-shadow: 0 10px 35px rgba(0,0,0,0.35);
+    }
+    #ui .row { display:flex; gap:10px; align-items:center; justify-content:space-between; }
+    #ui h1 { font-size:14px; margin:0 0 8px 0; letter-spacing:0.2px; font-weight:700; }
+    #time { font-variant-numeric: tabular-nums; font-weight:700; color:#7fe7ff; }
+    #status { margin-top:10px; max-height: 55vh; overflow:auto; padding-right:6px; }
+    .emp { display:flex; justify-content:space-between; gap:10px; padding:6px 0; border-bottom: 1px solid rgba(130,190,255,0.12); }
+    .emp:last-child { border-bottom:0; }
+    .emp .name { font-weight:650; color:#eaf4ff; }
+    .emp .st { color:#b8d2ff; font-size:12px; text-align:right; }
+    #hint {
+      position: fixed; right: 12px; bottom: 12px; z-index: 10;
+      color: rgba(230,245,255,0.75);
+      font-size: 12px; line-height:1.35;
+      background: rgba(10, 20, 40, 0.58);
+      border: 1px solid rgba(120,180,255,0.18);
+      border-radius: 12px;
+      padding: 10px 12px;
+      backdrop-filter: blur(6px);
+      max-width: 45vw;
+    }
+    #c { position:absolute; inset:0; }
+    .label {
+      position: absolute; transform: translate(-50%, -50%);
+      color: white; font-size: 12px; pointer-events:none;
+      text-shadow: 0 2px 10px rgba(0,0,0,0.6);
+      font-weight: 700;
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <h1>DAMAR / Ofis Simülasyonu</h1>
+    <div class="row">
+      <div>Simülasyon Saati</div>
+      <div id="time">09:00 (00)</div>
+    </div>
+    <div id="status"></div>
+  </div>
+
+  <div id="hint">
+    Fare: döndür • Sağ tık: sürükle • Teker: zoom<br/>
+    <span style="color:#bfefff">İpucu:</span> Ekran solundaki durum listesini izleyin.
+  </div>
+
+  <canvas id="c"></canvas>
+
+  <script type="module">
+    import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+    import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+
+    // Basit yardımcıler
+    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+    const lerp = (a, b, t) => a + (b - a) * t;
+
+    const sim = {
+      // 1 gerçek saniye = 1 simülasyon dakika
+      simSecondsPerRealSecond: 60,
+      startTimeMin: 9 * 60, // 09:00
+      dayMinutes: 24 * 60,
+      speed: 1,
+    };
+
+    const formatTime = (totalMin) => {
+      const m = ((totalMin % sim.dayMinutes) + sim.dayMinutes) % sim.dayMinutes;
+      const hh = String(Math.floor(m/60)).padStart(2,'0');
+      const mm = String(m%60).padStart(2,'0');
+      const dayMin = String(m%60).padStart(2,'0');
+      return `${hh}:${mm} (${dayMin})`;
+    };
+
+    // Sahne kurulumu
+    const canvas = document.getElementById('c');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0b1020);
+    scene.fog = new THREE.Fog(0x0b1020, 20, 90);
+
+    const camera = new THREE.PerspectiveCamera(55, window.innerWidth/window.innerHeight, 0.1, 200);
+    camera.position.set(20, 20, 26);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.06;
+    controls.target.set(10, 0, 10);
+
+    // Işıklar
+    scene.add(new THREE.AmbientLight(0x9ec7ff, 0.28));
+    const dir = new THREE.DirectionalLight(0xffffff, 1.0);
+    dir.position.set(15, 30, 10);
+    scene.add(dir);
+
+    // Zemin / ofis sınırları (30x20)
+    const FLOOR_W = 30;
+    const FLOOR_D = 20;
+    const WALL_H = 0.0; // sadece görsel yok (şimdilik)
+    const floorGeo = new THREE.PlaneGeometry(FLOOR_W, FLOOR_D);
+    const floorMat = new THREE.MeshStandardMaterial({ color: 0x0f1a34, roughness: 0.95, metalness: 0.0 });
+    const floor = new THREE.Mesh(floorGeo, floorMat);
+    floor.rotation.x = -Math.PI/2;
+    floor.position.set(FLOOR_W/2, 0, FLOOR_D/2);
+    scene.add(floor);
+
+    // Duvar hissi için grid
+    const grid = new THREE.GridHelper(FLOOR_W, FLOOR_W/2, 0x2b4a87, 0x16305f);
+    grid.position.set(0, 0.001, 0);
+    scene.add(grid);
+
+    // Bölge tanımları (x,z)
+    const Z = {
+      Asgard:     { name:'Asgard',     x: 6,  z: 16, w: 6.5, d: 4.0, color:0xffcc00 },
+      Valhalla:   { name:'Valhalla',   x: 16, z: 16, w: 8.0, d: 4.0, color:0x5bd6ff },
+      Huginn:     { name:'Huginn',     x: 6,  z: 8,  w: 9.0, d: 6.0, color:0x7aff9a },
+      Folkvangr:  { name:'Folkvangr',  x: 16, z: 10, w: 8.0, d: 6.0, color:0xb58cff },
+      Masyaf:     { name:'Masyaf',     x: 24, z: 8,  w: 5.0, d: 6.0, color:0xff7a7a },
+      Yggdrasil:  { name:'Yggdrasil',  x: 24, z: 16, w: 5.0, d: 4.0, color:0xff9f5a },
+      Vanaheim:   { name:'Vanaheim',   x: 10, z: 2,  w: 10.0,d: 5.0, color:0x66d0ff },
+      Midgard:    { name:'Midgard',    x: 20, z: 2,  w: 8.0, d: 5.0, color:0x7ee0d0 },
+
+      Mutfak:     { name:'Mutfak',     x: 4,  z: 2,  w: 5.5, d: 3.5, color:0xc7a6ff },
+      Kütüphane:  { name:'Kütüphane',  x: 10, z: 5,  w: 7.0, d: 3.5, color:0x90b7ff },
+      Merdiven:   { name:'Merdiven',   x: 14, z: 6,  w: 3.0, d: 2.5, color:0xffd6a5 },
+      WC:          { name:'WC',         x: 22, z: 4,  w: 4.0, d: 2.2, color:0xa6ffb0 },
+      Giriş:      { name:'Giriş',       x: 14, z: 19.2,w: 8.0, d: 0.8, color:0xffffff },
+    };
+
+    // Ofis dekorasyon/nesneler (basitleştirilmiş)
+    function addPlant(x,z,scale=1){
+      const g = new THREE.ConeGeometry(0.25*scale, 1.2*scale, 8);
+      const m = new THREE.MeshStandardMaterial({ color:0x2ecc71, roughness:0.7 });
+      const t = new THREE.Mesh(g,m);
+      t.position.set(x,0.6,z);
+      scene.add(t);
+      const pot = new THREE.Mesh(new THREE.CylinderGeometry(0.18*scale,0.2*scale,0.25*scale,10),
+        new THREE.MeshStandardMaterial({ color:0x8a5a3c, roughness:0.95 }));
+      pot.position.set(x,0.15*scale,z);
+      scene.add(pot);
+    }
+
+    function addDesk(x,z,w=1.6,d=0.9){
+      const top = new THREE.Mesh(
+        new THREE.BoxGeometry(w,0.07,d),
+        new THREE.MeshStandardMaterial({ color:0x6b4a2f, roughness:0.8 })
+      );
+      top.position.set(x,0.65,z);
+      scene.add(top);
+
+      const base = new THREE.Mesh(
+        new THREE.BoxGeometry(w*0.9,0.6,d*0.9),
+        new THREE.MeshStandardMaterial({ color:0x3b2b1c, roughness:0.9 })
+      );
+      base.position.set(x,0.35,z);
+      scene.add(base);
+      return top;
+    }
+
+    function addChair(x,z){
+      const seat = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.22,0.24,0.07,16),
+        new THREE.MeshStandardMaterial({ color:0x2f4a7a, roughness:0.7 })
+      );
+      seat.position.set(x,0.52,z);
+      scene.add(seat);
+
+      const back = new THREE.Mesh(
+        new THREE.BoxGeometry(0.38,0.55,0.08),
+        new THREE.MeshStandardMaterial({ color:0x2f4a7a, roughness:0.7 })
+      );
+      back.position.set(x,0.82,z-0.2);
+      scene.add(back);
+
+      return seat;
+    }
+
+    function addMonitor(x,z){
+      const screen = new THREE.Mesh(
+        new THREE.BoxGeometry(0.55,0.33,0.03),
+        new THREE.MeshStandardMaterial({ color:0x0b1020, roughness:0.2, metalness:0.9, emissive:0x000000 })
+      );
+      screen.position.set(x,0.75,z);
+      scene.add(screen);
+
+      const stand = new THREE.Mesh(
+        new THREE.BoxGeometry(0.06,0.12,0.06),
+        new THREE.MeshStandardMaterial({ color:0x222, roughness:0.8 })
+      );
+      stand.position.set(x,0.64,z);
+      scene.add(stand);
+
+      const lamp = new THREE.PointLight(0x5ad7ff, 1.2, 8);
+      lamp.position.set(x,0.90,z);
+      lamp.visible = false;
+      scene.add(lamp);
+
+      return { screen, lamp };
+    }
+
+    // Asgard / toplantı / stüdyo vb. basit yerleşim
+    // (Orijinal floorplan detayları yerine 3D hissi verecek düzen)
+    const deskMonitors = [];
+
+    // Asgard
+    addDesk(Z.Asgard.x-1.0, Z.Asgard.z+0.3); addChair(Z.Asgard.x-2.0, Z.Asgard.z+0.0);
+    deskMonitors.push({ ...addMonitor(Z.Asgard.x-0.9, Z.Asgard.z+0.35) });
+
+    addDesk(Z.Asgard.x+0.7, Z.Asgard.z+0.3); addChair(Z.Asgard.x+1.9, Z.Asgard.z+0.0);
+    deskMonitors.push({ ...addMonitor(Z.Asgard.x+0.7, Z.Asgard.z+0.38) });
+
+    // Valhalla
+    addDesk(Z.Valhalla.x, Z.Valhalla.z+0.2, 3.0, 1.0);
+    addChair(Z.Valhalla.x-1.0, Z.Valhalla.z-0.5);
+    addChair(Z.Valhalla.x+1.0, Z.Valhalla.z-0.5);
+    // "Meeting table monitors"
+    deskMonitors.push({ ...addMonitor(Z.Valhalla.x-0.9, Z.Valhalla.z+0.22) });
+    deskMonitors.push({ ...addMonitor(Z.Valhalla.x+0.9, Z.Valhalla.z+0.22) });
+
+    // Huginn
+    for(let i=0;i<3;i++){
+      const x = Z.Huginn.x - 2.2 + i*2.2;
+      addDesk(x, Z.Huginn.z+0.8);
+      addChair(x, Z.Huginn.z+0.1);
+      deskMonitors.push({ ...addMonitor(x, Z.Huginn.z+0.85) });
+    }
+
+    // Folkvangr
+    for(let i=0;i<2;i++){
+      const x = Z.Folkvangr.x - 1.6 + i*3.2;
+      addDesk(x, Z.Folkvangr.z+0.7);
+      addChair(x, Z.Folkvangr.z+0.1);
+      deskMonitors.push({ ...addMonitor(x, Z.Folkvangr.z+0.75) });
+    }
+    // Masyaf
+    addDesk(Z.Masyaf.x-0.8, Z.Masyaf.z+0.6);
+    addChair(Z.Masyaf.x-0.8, Z.Masyaf.z+0.0);
+    deskMonitors.push({ ...addMonitor(Z.Masyaf.x-0.8, Z.Masyaf.z+0.65) });
+
+    addDesk(Z.Masyaf.x+1.0, Z.Masyaf.z+0.2);
+    addChair(Z.Masyaf.x+1.0, Z.Masyaf.z-0.3);
+    deskMonitors.push({ ...addMonitor(Z.Masyaf.x+1.0, Z.Masyaf.z+0.25) });
+
+    // Yggdrasil
+    addDesk(Z.Yggdrasil.x, Z.Yggdrasil.z+0.2, 2.0, 1.0);
+    deskMonitors.push({ ...addMonitor(Z.Yggdrasil.x-0.6, Z.Yggdrasil.z+0.2) });
+    deskMonitors.push({ ...addMonitor(Z.Yggdrasil.x+0.6, Z.Yggdrasil.z+0.2) });
+
+    // Vanaheim
+    addDesk(Z.Vanaheim.x-2.0, Z.Vanaheim.z+0.6);
+    addChair(Z.Vanaheim.x-2.0, Z.Vanaheim.z+0.05);
+    deskMonitors.push({ ...addMonitor(Z.Vanaheim.x-2.0, Z.Vanaheim.z+0.65) });
+
+    addDesk(Z.Vanaheim.x+1.5, Z.Vanaheim.z+0.2);
+    addChair(Z.Vanaheim.x+1.5, Z.Vanaheim.z-0.3);
+    deskMonitors.push({ ...addMonitor(Z.Vanaheim.x+1.5, Z.Vanaheim.z+0.25) });
+
+    // Midgard
+    addDesk(Z.Midgard.x-1.2, Z.Midgard.z+0.4);
+    addChair(Z.Midgard.x-1.2, Z.Midgard.z-0.1);
+    deskMonitors.push({ ...addMonitor(Z.Midgard.x-1.2, Z.Midgard.z+0.45) });
+
+    // Küçük bitkiler
+    addPlant(6,12,1.0);
+    addPlant(24,12,0.9);
+    addPlant(10,9,0.8);
+
+    // "DAMAR" rug (giriş)
+    const rug = new THREE.Mesh(
+      new THREE.PlaneGeometry(7.2, 1.0),
+      new THREE.MeshStandardMaterial({ color:0x8b1e3f, roughness:0.95, metalness:0.05, emissive:0x200000 })
+    );
+    rug.rotation.x = -Math.PI/2;
+    rug.position.set(14,0.02,19.15);
+    scene.add(rug);
+
+    // Ruh/kişiler
+    const avatars = [];
+
+    function createAvatar(name, x, z, color, tagChar){
+      const group = new THREE.Group();
+
+      const body = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.22, 0.55, 6, 16),
+        new THREE.MeshStandardMaterial({ color, roughness:0.55, metalness:0.05 })
+      );
+      body.position.y = 0.38;
+      group.add(body);
+
+      const head = new THREE.Mesh(
+        new THREE.SphereGeometry(0.18, 16, 16),
+        new THREE.MeshStandardMaterial({ color:0xf2d9c7, roughness:0.9 })
+      );
+      head.position.y = 0.78;
+      group.add(head);
+
+      // küçük etiket sprite benzeri: canvas texture
+      const canvas2 = document.createElement('canvas');
+      canvas2.width = 256; canvas2.height = 256;
+      const ctx = canvas2.getContext('2d');
+      ctx.fillStyle = 'rgba(0,0,0,0)';
+      ctx.fillRect(0,0,256,256);
+
+      ctx.beginPath();
+      ctx.arc(128, 128, 90, 0, Math.PI*2);
+      ctx.fillStyle = color;
+      ctx.fill();
+
+      ctx.fillStyle = '#101320';
+      ctx.font = 'bold 96px system-ui, -apple-system, Segoe UI, Roboto, Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(tagChar, 128, 142);
+
+      const tex = new THREE.CanvasTexture(canvas2);
+      tex.needsUpdate = true;
+
+      const spriteMat = new THREE.SpriteMaterial({ map: tex, transparent:true });
+      const sprite = new THREE.Sprite(spriteMat);
+      sprite.scale.set(0.9,0.9,1);
+      sprite.position.set(0,1.55,0);
+      group.add(sprite);
+
+      group.position.set(x, 0, z);
+      scene.add(group);
+
+      return { group, name, color, x, z, state:'Idle', target: new THREE.Vector3(x,0,z), radius:0.35, tagChar };
+    }
+
+    // İskelet route noktaları (dinlenme rota sırası)
+    const restRoute = [
+      () => ({ zone:'Mutfak',    x: Z.Mutfak.x,    z: Z.Mutfak.z+0.2 }),
+      () => ({ zone:'Valhalla',  x: Z.Valhalla.x,  z: Z.Valhalla.z-0.1 }),
+      () => ({ zone:'Kütüphane', x: Z.Kütüphane.x, z: Z.Kütüphane.z+0.1 }),
+      () => ({ zone:'Huginn',     x: Z.Huginn.x,    z: Z.Huginn.z-0.4 }),
+      () => ({ zone:'Merdiven',  x: Z.Merdiven.x,  z: Z.Merdiven.z+0.1 }),
+      () => ({ zone:'WC',         x: Z.WC.x,         z: Z.WC.z+0.05 }),
+      () => ({ zone:'Giriş',      x: Z.Giriş.x,      z: Z.Giriş.z }),
+    ];
+
+    // Mesai başlangıcı bitiş
+    const WORK_START_MIN = 9*60;  // 09:00
+    const WORK_END_MIN   = 18*60; // 18:00
+
+    // Mila özel: akşam 22:00'a kadar kalma olasılığı (yaklaşık %48)
+    const MILA_EXTRA_PROB = 0.48;
+
+    // Zona gidecek hedefler (basitleştirilmiş çalışma noktası)
+    const workPoints = {
+      'Nihal Aksakal': { x: Z.Asgard.x-1.0, z: Z.Asgard.z+0.3 },
+      'Mila Sokolova': { x: Z.Asgard.x+0.7, z: Z.Asgard.z+0.3 },
+      'Templar':        { x: Z.Huginn.x-0.8, z: Z.Huginn.z+0.8 },
+      'Kassandra':      { x: Z.Folkvangr.x-1.6, z: Z.Folkvangr.z+0.7 },
+      'Bayek':          { x: Z.Folkvangr.x+1.6, z: Z.Folkvangr.z+0.7 },
+      'Shane':          { x: Z.Masyaf.x-0.8, z: Z.Masyaf.z+0.6 },
+      'Tazim':          { x: Z.Masyaf.x+1.0, z: Z.Masyaf.z+0.2 },
+      'Desmond':        { x: Z.Masyaf.x+0.2, z: Z.Masyaf.z+0.2 },
+      'Çita':           { x: Z.Yggdrasil.x-0.6, z: Z.Yggdrasil.z+0.2 },
+      'Murmansk':      { x: Z.Yggdrasil.x+0.6, z: Z.Yggdrasil.z+0.2 },
+      'Lucy':           { x: Z.Vanaheim.x-2.0, z: Z.Vanaheim.z+0.6 },
+      'Altair':         { x: Z.Vanaheim.x+1.5, z: Z.Vanaheim.z+0.2 },
+      'Leonardo':       { x: Z.Vanaheim.x,   z: Z.Vanaheim.z+0.2 },
+      'Genel':          { x: Z.Vanaheim.x+2.0, z: Z.Vanaheim.z+0.2 },
+      'Edward':         { x: Z.Midgard.x-1.2, z: Z.Midgard.z+0.4 },
+    };
+
+    // Avatarlara renk ve tag
+    const people = [
+      { name:'Nihal Aksakal', color:0xffe066, tag:'N' },
+      { name:'Mila Sokolova', color:0x6dff7a, tag:'M' },
+      { name:'Templar', color:0x7ad0ff, tag:'T' },
+      { name:'Kassandra', color:0xffb1e8, tag:'K' },
+      { name:'Bayek', color:0xffa85c, tag:'B' },
+      { name:'Shane', color:0x9cffd1, tag:'S' },
+      { name:'Tazim', color:0xc2a3ff, tag:'Z' },
+      { name:'Desmond', color:0xffffff, tag:'D' },
+      { name:'Çita', color:0xff7a7a, tag:'Ç' },
+      { name:'Murmansk', color:0x7ee0d0, tag:'R' },
+      { name:'Lucy', color:0x66d0ff, tag:'L' },
+      { name:'Altair', color:0x8cffc8, tag:'A' },
+      { name:'Leonardo', color:0xb58cff, tag:'O' },
+      { name:'Genel', color:0xffd6a5, tag:'G' },
+      { name:'Edward', color:0x90b7ff, tag:'E' },
+    ];
+
+    // avatarları yarat
+    for(const p of people){
+      const wp = workPoints[p.name];
+      const a = createAvatar(p.name, wp.x, wp.z, p.color, p.tag);
+      a.state = 'Working';
+      avatars.push(a);
+    }
+
+    // Yoğunluk önleme: hedefe yaklaşırken küçük offset
+    function applyCrowdAvoidance(av, desired){
+      // Aynı hedef/zone içinde çakışmayı azaltmak için basit bir iterasyon
+      const push = new THREE.Vector3(0,0,0);
+      for(const other of avatars){
+        if(other === av) continue;
+        const dx = av.group.position.x - other.group.position.x;
+        const dz = av.group.position.z - other.group.position.z;
+        const dist = Math.sqrt(dx*dx + dz*dz);
+        const minDist = (av.radius + other.radius);
+        if(dist > 0.0001 && dist < minDist){
+          const t = (minDist - dist) / minDist; // 0..1
+          push.x += (dx/dist) * t * 0.35;
+          push.z += (dz/dist) * t * 0.35;
+        }
+      }
+      desired.add(push);
+    }
+
+    function setTarget(av, x, z){
+      av.target.set(x, 0, z);
+    }
+
+    function currentSimMinutes(){
+      return sim.startTimeMin + simTimeMinutes;
+    }
+
+    // Durum metni
+    const statusEl = document.getElementById('status');
+    const timeEl = document.getElementById('time');
+  ```
+    // Durum metni
+    const statusEl = document.getElementById('status');
+    const timeEl = document.getElementById('time');
+
+    // Similasyon kontrol
+    let simTimeMinutes = 0;
+
+    function rand(min, max){ return min + Math.random() * (max - min); }
+
+    // Çalışma/rest cycle basit kurgusu
+    // Her avatar için:
+    // - WORK: 60-210 dk arası
+    // - REST: 20-80 dk arası
+    // Mila: akşam 22:00'ye kadar ekstra kalma ihtimali
+    function initWorkRest(av){
+      av.nextStateChangeAt = 0;
+      const initialWork = rand(70, 160);
+      av.state = 'Working';
+      av.nextStateChangeAt = simTimeMinutes + initialWork;
+      av.currentRestStep = 0;
+      av.restStepAt = 0;
+      av.restDuration = rand(25, 55);
+      av.restTotalDuration = av.restDuration;
+    }
+
+    for(const av of avatars){
+      initWorkRest(av);
+    }
+
+    function zoneOfPoint(x,z){
+      // Basit: en yakın bölgeyi seç
+      let best = { key:null, dist:1e9 };
+      for(const key of Object.keys(Z)){
+        const bz = Z[key];
+        const cx = bz.x + bz.w/2;
+        const cz = bz.z + bz.d/2;
+        const dx = x - cx;
+        const dz = z - cz;
+        const d2 = dx*dx + dz*dz;
+        if(d2 < best.dist){
+          best = { key, dist:d2 };
+        }
+      }
+      return best.key;
+    }
+
+    function moveAvatar(av, dtMin){
+      // Hedefe doğru yumuşak hareket
+      const speed = av.state === 'Working' ? 0.65 : 0.85; // birim/dk
+      const pos = av.group.position;
+      const target = av.target;
+
+      const dx = target.x - pos.x;
+      const dz = target.z - pos.z;
+      const dist = Math.sqrt(dx*dx + dz*dz);
+
+      if(dist < 0.04){
+        pos.x = target.x; pos.z = target.z;
+      }else{
+        const step = speed * dtMin;
+        const t = Math.min(1, step / dist);
+        pos.x = pos.x + dx * t;
+        pos.z = pos.z + dz * t;
+      }
+
+      // Çarpışma önleme: sadece hedefe giderken küçük offset
+      // (Biz sadece desired target'a küçük push uygulayacağız)
+      // dtMin küçük olduğu için kararlı kalır.
+    }
+
+    function updateAvatarState(av){
+      // Zaman güncelle
+      if(simTimeMinutes < av.nextStateChangeAt){
+        return;
+      }
+
+      if(av.state === 'Working'){
+        // Working -> Resting (mola rotası)
+        av.state = 'Resting';
+        av.currentRestStep = 0;
+        av.restTotalDuration = rand(25, 60);
+        av.restDuration = av.restTotalDuration;
+
+        // Eğer Mila ve geceyse, ekstra kalma kontrolü
+        const currentAbs = (WORK_START_MIN + simTimeMinutes) % sim.dayMinutes; // 0..1439
+        const curHour = Math.floor(currentAbs/60);
+        const isEvening = curHour >= 22;
+
+        if(av.name === 'Mila Sokolova' && isEvening){
+          if(Math.random() < MILA_EXTRA_PROB){
+            // Mila extra: tekrar Working'e dön, bitişi uzat
+            av.state = 'Working';
+            av.nextStateChangeAt = simTimeMinutes + rand(40, 110);
+            av.restTotalDuration = 0;
+            return;
+          }
+        }
+
+        av.nextStateChangeAt = simTimeMinutes + av.restTotalDuration;
+
+        // İlk dinlenme adımı hedefle
+        const first = restRoute[av.currentRestStep]();
+        setTarget(av, first.x, first.z);
+        return;
+      }
+
+      // Resting -> next Rest step / then back to Working
+      const elapsedSinceRestStart = av.nextStateChangeAt - av.restTotalDuration;
+      const restElapsed = simTimeMinutes - elapsedSinceRestStart;
+
+      // Rest adımı sıklığı
+      const stepEvery = Math.max(6, av.restTotalDuration / restRoute.length);
+
+      if(restElapsed >= av.restTotalDuration){
+        // Rest bit -> Working
+        av.state = 'Working';
+        av.nextStateChangeAt = simTimeMinutes + rand(70, 200);
+
+        const wp = workPoints[av.name];
+        setTarget(av, wp.x, wp.z);
+        return;
+      }
+
+      // Adım geçişi
+      const desiredStep = clamp(Math.floor(restElapsed / stepEvery), 0, restRoute.length-1);
+      if(desiredStep !== av.currentRestStep){
+        av.currentRestStep = desiredStep;
+        const stepFn = restRoute[av.currentRestStep]();
+        setTarget(av, stepFn.x, stepFn.z);
+      }
+    }
+
+    // Güncelle: döngü
+    function update(){
+      requestAnimationFrame(update);
+
+      const now = performance.now();
+      const dt = clock ? (now - clock)/1000 : 0;
+      clock = now;
+      const dtReal = Math.min(0.05, dt);
+      const dtMin = (dtReal * sim.simSecondsPerRealSecond) * sim.speed; // gerçek saniye -> sim dakika
+
+      simTimeMinutes += dtMin;
+
+      // Ekran zamanını güncelle
+      const absMin = sim.startTimeMin + simTimeMinutes;
+      timeEl.textContent = formatTime(absMin);
+
+      // Çarpışma önleme için önce tüm avatarlar state/target belirle
+      for(const av of avatars){
+        updateAvatarState(av);
+      }
+
+      // Targete yaklaşma + desired target push
+      // (Yoğunluk önleme: birbirine yakın olanlar hedefe giderken küçük offset ekler)
+      const desiredTargets = new Map();
+      for(const av of avatars){
+        desiredTargets.set(av, new THREE.Vector3(av.target.x, 0, av.target.z));
+      }
+      for(const av of avatars){
+        const desired = desiredTargets.get(av);
+        for(const other of avatars){
+          if(other === av) continue;
+          const dx = av.group.position.x - other.group.position.x;
+          const dz = av.group.position.z - other.group.position.z;
+          const dist = Math.sqrt(dx*dx + dz*dz);
+          const minDist = (av.radius + other.radius);
+          if(dist > 0.0001 && dist < minDist){
+            const t = (minDist - dist) / minDist;
+            desired.x += (dx/dist) * t * 0.35;
+            desired.z += (dz/dist) * t * 0.35;
+          }
+        }
+      }
+
+      // Hareket
+      for(const av of avatars){
+        const desired = desiredTargets.get(av);
+        // geçici desired hedefi set et
+        av.target.set(desired.x, 0, desired.z);
+        moveAvatar(av, dtMin);
+      }
+
+      // Monitor glow: working iken
+      const workingAny = new Set(avatars.filter(a=>a.state==='Working').map(a=>a.name));
+      for(const m of deskMonitors){
+        // Kabaca: working'de bir ışık açık, rest'te kapalı
+        // (Detay eşleştirme yok; basit görsel efekt)
+        m.lamp.visible = Math.random() < 0.25; // hafif titreşim
+      }
+
+      // UI: durum listesi
+      statusEl.innerHTML = '';
+      const sorted = [...avatars].sort((a,b)=>a.name.localeCompare(b.name,'tr'));
+      for(const av of sorted){
+        const item = document.createElement('div');
+        item.className = 'emp';
+
+        const loc = zoneOfPoint(av.group.position.x, av.group.position.z);
+        const left = document.createElement('div');
+        left.className = 'name';
+        left.textContent = av.name;
+
+        const right = document.createElement('div');
+        right.className = 'st';
+        right.textContent = `${av.state} • ${loc || ''}`;
+
+        item.appendChild(left);
+        item.appendChild(right);
+        statusEl.appendChild(item);
+      }
+
+      renderer.render(scene, camera);
+    }
+
+    // Başlat
+    let clock = null;
+    update();
+
+    // Resize
+    window.addEventListener('resize', ()=>{
+      camera.aspect = window.innerWidth/window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>
