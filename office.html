@@ -3,21 +3,57 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Test</title>
+  <title>DAMAR Ofis Simülasyonu</title>
   <style>
-    body { margin:0; background:#0b1020; color:#fff; font-family:system-ui; }
-    #msg { padding:20px; font-size:16px; }
-    #error { 
-      position:fixed; bottom:20px; left:20px; right:20px; 
-      background:#5a1a1a; color:#ffcccc; padding:15px; border-radius:10px; 
-      display:none; font-size:14px; z-index:100;
+    html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#0b1020; font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
+    #ui {
+      position: fixed; top: 12px; left: 12px; z-index: 10;
+      width: min(420px, calc(100vw - 24px));
+      background: rgba(10, 20, 40, 0.72);
+      border: 1px solid rgba(120,180,255,0.25);
+      border-radius: 14px;
+      padding: 12px 12px 10px;
+      color: #d7e7ff;
+      backdrop-filter: blur(6px);
+      box-shadow: 0 10px 35px rgba(0,0,0,0.35);
     }
-    canvas { display:block; }
+    #ui .row { display:flex; gap:10px; align-items:center; justify-content:space-between; }
+    #ui h1 { font-size:14px; margin:0 0 8px 0; letter-spacing:0.2px; font-weight:700; }
+    #time { font-variant-numeric: tabular-nums; font-weight:700; color:#7fe7ff; }
+    #status { margin-top:10px; max-height: 55vh; overflow:auto; padding-right:6px; }
+    .emp { display:flex; justify-content:space-between; gap:10px; padding:6px 0; border-bottom: 1px solid rgba(130,190,255,0.12); }
+    .emp:last-child { border-bottom:0; }
+    .emp .name { font-weight:650; color:#eaf4ff; }
+    .emp .st { color:#b8d2ff; font-size:12px; text-align:right; }
+    #hint {
+      position: fixed; right: 12px; bottom: 12px; z-index: 10;
+      color: rgba(230,245,255,0.75);
+      font-size: 12px; line-height:1.35;
+      background: rgba(10, 20, 40, 0.58);
+      border: 1px solid rgba(120,180,255,0.18);
+      border-radius: 12px;
+      padding: 10px 12px;
+      backdrop-filter: blur(6px);
+      max-width: 45vw;
+    }
+    #c { position:absolute; inset:0; }
   </style>
 </head>
 <body>
-  <div id="msg">Yükleniyor...</div>
-  <div id="error"></div>
+  <div id="ui">
+    <h1>DAMAR / Ofis Simülasyonu</h1>
+    <div class="row">
+      <div>Simülasyon Saati</div>
+      <div id="time">09:00 (00)</div>
+    </div>
+    <div id="status"></div>
+  </div>
+
+  <div id="hint">
+    Fare: döndür • Sağ tık: sürükle • Teker: zoom<br/>
+    <span style="color:#bfefff">İpucu:</span> Ekran solundaki durum listesini izleyin.
+  </div>
+
   <canvas id="c"></canvas>
 
   <script type="importmap">
@@ -30,60 +66,209 @@
   </script>
 
   <script type="module">
-    const errorEl = document.getElementById('error');
-    const msgEl = document.getElementById('msg');
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-    function showError(text) {
-      errorEl.style.display = 'block';
-      errorEl.textContent = 'HATA: ' + text;
-      msgEl.textContent = 'Hata oluştu (aşağıya bak)';
+    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+    const sim = {
+      simSecondsPerRealSecond: 60,
+      startTimeMin: 9 * 60,
+      dayMinutes: 24 * 60,
+      speed: 1,
+    };
+
+    const formatTime = (totalMin) => {
+      const m = ((totalMin % sim.dayMinutes) + sim.dayMinutes) % sim.dayMinutes;
+      const hh = String(Math.floor(m/60)).padStart(2,'0');
+      const mm = String(m%60).padStart(2,'0');
+      return `${hh}:${mm} (${mm})`;
+    };
+
+    const canvas = document.getElementById('c');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0b1020);
+    scene.fog = new THREE.Fog(0x0b1020, 20, 90);
+
+    const camera = new THREE.PerspectiveCamera(55, window.innerWidth/window.innerHeight, 0.1, 200);
+    camera.position.set(20, 20, 26);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.06;
+    controls.target.set(10, 0, 10);
+
+    scene.add(new THREE.AmbientLight(0x9ec7ff, 0.28));
+    const dir = new THREE.DirectionalLight(0xffffff, 1.0);
+    dir.position.set(15, 30, 10);
+    scene.add(dir);
+
+    const FLOOR_W = 30;
+    const FLOOR_D = 20;
+    const floorGeo = new THREE.PlaneGeometry(FLOOR_W, FLOOR_D);
+    const floorMat = new THREE.MeshStandardMaterial({ color: 0x0f1a34, roughness: 0.95, metalness: 0.0 });
+    const floor = new THREE.Mesh(floorGeo, floorMat);
+    floor.rotation.x = -Math.PI/2;
+    floor.position.set(FLOOR_W/2, 0, FLOOR_D/2);
+    scene.add(floor);
+
+    const grid = new THREE.GridHelper(FLOOR_W, FLOOR_W/2, 0x2b4a87, 0x16305f);
+    grid.position.set(0, 0.001, 0);
+    scene.add(grid);
+
+    const Z = {
+      Asgard:     { name:'Asgard',     x: 6,  z: 16, w: 6.5, d: 4.0 },
+      Valhalla:   { name:'Valhalla',   x: 16, z: 16, w: 8.0, d: 4.0 },
+      Huginn:     { name:'Huginn',     x: 6,  z: 8,  w: 9.0, d: 6.0 },
+      Folkvangr:  { name:'Folkvangr',  x: 16, z: 10, w: 8.0, d: 6.0 },
+      Masyaf:     { name:'Masyaf',     x: 24, z: 8,  w: 5.0, d: 6.0 },
+      Yggdrasil:  { name:'Yggdrasil',  x: 24, z: 16, w: 5.0, d: 4.0 },
+      Vanaheim:   { name:'Vanaheim',   x: 10, z: 2,  w: 10.0,d: 5.0 },
+      Midgard:    { name:'Midgard',    x: 20, z: 2,  w: 8.0, d: 5.0 },
+      Mutfak:     { name:'Mutfak',     x: 4,  z: 2,  w: 5.5, d: 3.5 },
+      Kütüphane:  { name:'Kütüphane',  x: 10, z: 5,  w: 7.0, d: 3.5 },
+      Merdiven:   { name:'Merdiven',   x: 14, z: 6,  w: 3.0, d: 2.5 },
+      WC:         { name:'WC',         x: 22, z: 4,  w: 4.0, d: 2.2 },
+      Giriş:      { name:'Giriş',      x: 14, z: 19.2,w: 8.0, d: 0.8 },
+    };
+
+    function addDesk(x,z,w=1.6,d=0.9){
+      const top = new THREE.Mesh(new THREE.BoxGeometry(w,0.07,d), new THREE.MeshStandardMaterial({ color:0x6b4a2f, roughness:0.8 }));
+      top.position.set(x,0.65,z); scene.add(top);
+      const base = new THREE.Mesh(new THREE.BoxGeometry(w*0.9,0.6,d*0.9), new THREE.MeshStandardMaterial({ color:0x3b2b1c, roughness:0.9 }));
+      base.position.set(x,0.35,z); scene.add(base);
     }
 
-    window.addEventListener('error', e => showError(e.message));
-    window.addEventListener('unhandledrejection', e => showError(e.reason?.message || e.reason));
+    function addChair(x,z){
+      const seat = new THREE.Mesh(new THREE.CylinderGeometry(0.22,0.24,0.07,16), new THREE.MeshStandardMaterial({ color:0x2f4a7a }));
+      seat.position.set(x,0.52,z); scene.add(seat);
+    }
 
-    try {
-      const THREE = await import('three');
-      const { OrbitControls } = await import('three/addons/controls/OrbitControls.js');
+    // Basit masa ve sandalyeler
+    addDesk(Z.Asgard.x-1, Z.Asgard.z); addChair(Z.Asgard.x-1, Z.Asgard.z-0.6);
+    addDesk(Z.Asgard.x+1, Z.Asgard.z); addChair(Z.Asgard.x+1, Z.Asgard.z-0.6);
+    addDesk(Z.Huginn.x, Z.Huginn.z); addChair(Z.Huginn.x, Z.Huginn.z-0.6);
+    addDesk(Z.Folkvangr.x-1.5, Z.Folkvangr.z); addChair(Z.Folkvangr.x-1.5, Z.Folkvangr.z-0.6);
+    addDesk(Z.Folkvangr.x+1.5, Z.Folkvangr.z); addChair(Z.Folkvangr.x+1.5, Z.Folkvangr.z-0.6);
+    addDesk(Z.Masyaf.x, Z.Masyaf.z); addChair(Z.Masyaf.x, Z.Masyaf.z-0.6);
+    addDesk(Z.Yggdrasil.x, Z.Yggdrasil.z); addChair(Z.Yggdrasil.x, Z.Yggdrasil.z-0.6);
+    addDesk(Z.Vanaheim.x-2, Z.Vanaheim.z); addChair(Z.Vanaheim.x-2, Z.Vanaheim.z-0.6);
+    addDesk(Z.Vanaheim.x+1.5, Z.Vanaheim.z); addChair(Z.Vanaheim.x+1.5, Z.Vanaheim.z-0.6);
+    addDesk(Z.Midgard.x, Z.Midgard.z); addChair(Z.Midgard.x, Z.Midgard.z-0.6);
 
-      msgEl.textContent = 'Three.js yüklendi, sahne kuruluyor...';
+    const avatars = [];
+    function createAvatar(name, x, z, color, tag){
+      const group = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.22, 0.55, 6, 16), new THREE.MeshStandardMaterial({ color }));
+      body.position.y = 0.38; group.add(body);
+      const head = new THREE.Mesh(new THREE.SphereGeometry(0.18, 16, 16), new THREE.MeshStandardMaterial({ color:0xf2d9c7 }));
+      head.position.y = 0.78; group.add(head);
+      group.position.set(x, 0, z);
+      scene.add(group);
+      return { group, name, state:'Working', target: new THREE.Vector3(x,0,z) };
+    }
 
-      const canvas = document.getElementById('c');
-      const renderer = new THREE.WebGLRenderer({ canvas });
-      renderer.setSize(window.innerWidth, window.innerHeight);
+    const workPoints = {
+      'Nihal Aksakal': { x: Z.Asgard.x-1, z: Z.Asgard.z },
+      'Mila Sokolova': { x: Z.Asgard.x+1, z: Z.Asgard.z },
+      'Templar':       { x: Z.Huginn.x, z: Z.Huginn.z },
+      'Kassandra':     { x: Z.Folkvangr.x-1.5, z: Z.Folkvangr.z },
+      'Bayek':         { x: Z.Folkvangr.x+1.5, z: Z.Folkvangr.z },
+      'Shane':         { x: Z.Masyaf.x-0.8, z: Z.Masyaf.z },
+      'Tazim':         { x: Z.Masyaf.x+0.8, z: Z.Masyaf.z },
+      'Desmond':       { x: Z.Masyaf.x, z: Z.Masyaf.z+0.5 },
+      'Çita':          { x: Z.Yggdrasil.x-0.6, z: Z.Yggdrasil.z },
+      'Murmansk':      { x: Z.Yggdrasil.x+0.6, z: Z.Yggdrasil.z },
+      'Lucy':          { x: Z.Vanaheim.x-2, z: Z.Vanaheim.z },
+      'Altair':        { x: Z.Vanaheim.x+1.5, z: Z.Vanaheim.z },
+      'Leonardo':      { x: Z.Vanaheim.x, z: Z.Vanaheim.z },
+      'Genel':         { x: Z.Vanaheim.x+2.5, z: Z.Vanaheim.z },
+      'Edward':        { x: Z.Midgard.x, z: Z.Midgard.z },
+    };
 
-      const scene = new THREE.Scene();
-      scene.background = new THREE.Color(0x112244);
+    const people = [
+      { name:'Nihal Aksakal', color:0xffe066 },
+      { name:'Mila Sokolova', color:0x6dff7a },
+      { name:'Templar', color:0x7ad0ff },
+      { name:'Kassandra', color:0xffb1e8 },
+      { name:'Bayek', color:0xffa85c },
+      { name:'Shane', color:0x9cffd1 },
+      { name:'Tazim', color:0xc2a3ff },
+      { name:'Desmond', color:0xffffff },
+      { name:'Çita', color:0xff7a7a },
+      { name:'Murmansk', color:0x7ee0d0 },
+      { name:'Lucy', color:0x66d0ff },
+      { name:'Altair', color:0x8cffc8 },
+      { name:'Leonardo', color:0xb58cff },
+      { name:'Genel', color:0xffd6a5 },
+      { name:'Edward', color:0x90b7ff },
+    ];
 
-      const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 100);
-      camera.position.set(0, 3, 8);
+    for (const p of people) {
+      const wp = workPoints[p.name];
+      const a = createAvatar(p.name, wp.x, wp.z, p.color);
+      avatars.push(a);
+    }
 
-      const controls = new OrbitControls(camera, renderer.domElement);
+    const statusEl = document.getElementById('status');
+    const timeEl = document.getElementById('time');
+    let simTimeMinutes = 0;
+    let clock = null;
 
-      const cube = new THREE.Mesh(
-        new THREE.BoxGeometry(2, 2, 2),
-        new THREE.MeshStandardMaterial({ color: 0xff3333 })
-      );
-      scene.add(cube);
-
-      const light = new THREE.DirectionalLight(0xffffff, 1);
-      light.position.set(5, 10, 5);
-      scene.add(light);
-      scene.add(new THREE.AmbientLight(0x404040));
-
-      function animate() {
-        requestAnimationFrame(animate);
-        cube.rotation.y += 0.01;
-        controls.update();
-        renderer.render(scene, camera);
+    function zoneOfPoint(x, z) {
+      let best = { key: null, dist: 1e9 };
+      for (const key of Object.keys(Z)) {
+        const bz = Z[key];
+        const dx = x - bz.x;
+        const dz = z - bz.z;
+        const d2 = dx*dx + dz*dz;
+        if (d2 < best.dist) best = { key, dist: d2 };
       }
-      animate();
-
-      msgEl.textContent = 'Çalışıyor! Kırmızı küp görünmeli.';
-
-    } catch (err) {
-      showError(err.message || String(err));
+      return best.key;
     }
+
+    function update() {
+      requestAnimationFrame(update);
+      const now = performance.now();
+      const dt = clock ? (now - clock)/1000 : 0;
+      clock = now;
+      const dtReal = Math.min(0.05, dt);
+      const dtMin = (dtReal * sim.simSecondsPerRealSecond) * sim.speed;
+      simTimeMinutes += dtMin;
+
+      const absMin = sim.startTimeMin + simTimeMinutes;
+      timeEl.textContent = formatTime(absMin);
+
+      // Basit hareket (şimdilik yerinde duruyorlar, istersen genişletiriz)
+      for (const av of avatars) {
+        // ileride çalışma/mola mantığı eklenebilir
+      }
+
+      statusEl.innerHTML = '';
+      const sorted = [...avatars].sort((a,b) => a.name.localeCompare(b.name, 'tr'));
+      for (const av of sorted) {
+        const item = document.createElement('div');
+        item.className = 'emp';
+        const loc = zoneOfPoint(av.group.position.x, av.group.position.z);
+        item.innerHTML = `<div class="name">${av.name}</div><div class="st">${av.state} • ${loc || ''}</div>`;
+        statusEl.appendChild(item);
+      }
+
+      controls.update();
+      renderer.render(scene, camera);
+    }
+
+    update();
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
   </script>
 </body>
 </html>
